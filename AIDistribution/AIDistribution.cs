@@ -1,3 +1,4 @@
+using System.Numerics;
 using Casper.Network.SDK;
 using Casper.Network.SDK.JsonRpc;
 using Casper.Network.SDK.Types;
@@ -8,7 +9,7 @@ namespace AIDistribution;
 public struct WalletRecord
 {
     public string AccountHash { get; set; }
-    public ulong Amount { get; set; }
+    public BigInteger Amount { get; set; }
     
     public string _line { get; set; }
 
@@ -36,7 +37,7 @@ public class AIDistribution
             var record = new WalletRecord()
             {
                 AccountHash = values[0],
-                Amount = ulong.Parse(values[1]),
+                Amount = BigInteger.Parse(values[1]),
                 _line = line,
             };
 
@@ -44,36 +45,6 @@ public class AIDistribution
         }
 
         return records;
-    }
-
-    public AIDistribution()
-    {
-    }
-    
-    public Deploy TransferAITokenDeploy(
-        KeyPair senderKey,
-        string contractHash,
-        ulong paymentMotes,
-        string chainName,
-        string recipientKey,
-        ulong amount)
-    {
-        var namedArgs = new List<NamedArg>()
-        {
-            new NamedArg("recipient", CLValue.Key(new AccountHashKey(recipientKey))),
-            new NamedArg("amount", CLValue.U256(amount))
-        };
-    
-        var deploy = DeployTemplates.ContractCall(new HashKey(contractHash),
-            "transfer",
-            namedArgs,
-            senderKey.PublicKey,
-            paymentMotes,
-            chainName,
-            1,
-            1_800_000);
-        deploy.Sign(senderKey);
-        return deploy;
     }
     
     public async Task<string?> Send(
@@ -83,7 +54,7 @@ public class AIDistribution
         ulong paymentMotes,
         string chainName,
         string recipientKey,
-        ulong amount
+        BigInteger amount
     )
     {
         string? deployHash = null;
@@ -138,10 +109,11 @@ public class AIDistribution
         var paymentFee = Values.PaymentFee;
         var records = ReadCsvFile(inputFile);
 
+        var deployHashes = new List<string>();
+        var count = 0;
+
         using (var writer = new StreamWriter(outputFile, append: true))
         {
-            var count = 0;
-
             foreach (var record in records)
             {
                 var hash = await Send(casperSdk,
@@ -152,16 +124,48 @@ public class AIDistribution
                     record.AccountHash,
                     record.Amount
                 );
+                deployHashes.Add(hash);
                 count++;
 
                 writer.WriteLine($"{hash},{record.ToString()}");
                 Console.WriteLine($"{hash},{record.ToString()}");
-                if (count % 100 == 0)
+                if (count % 10 == 0)
                 {
                     Console.WriteLine("Progress: " + count);
                     // Thread.Sleep(300);
                 }
             }
         }
+        
+        Console.WriteLine("Transfers done: " + count);
+        Console.WriteLine("Checking successful execution of deploys");
+        var deploysChecked = 0;
+        
+        foreach (var hash in deployHashes)
+        {
+            try
+            {
+                var tokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                var response  = await casperSdk.GetDeploy(hash, tokenSource.Token);
+                var result = response.Parse();
+                if (result.ExecutionResults.Count > 0 &&
+                    result.ExecutionResults[0].Cost > 0)
+                {
+                    deploysChecked++;
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("Error with deploy hash: " + hash);
+                Console.WriteLine("  Error: " + e.Message);
+            }
+            
+            if (deploysChecked % 10 == 0)
+            {
+                Console.WriteLine("Progress: " + deploysChecked);
+                // Thread.Sleep(300);
+            }
+        }
+        Console.WriteLine("Progress: " + deploysChecked);
     }
 }
